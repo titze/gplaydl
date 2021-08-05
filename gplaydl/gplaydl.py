@@ -10,7 +10,9 @@ import validators
 from termcolor import colored
 from getpass import getpass
 
-devicecode = 'shamu'
+devicecode = 'walleye'
+country = 'de_DE'
+timezone = 'Europe/Berlin'
 
 ap = argparse.ArgumentParser(
     description='Command line APK downloader for Google Play Store.')
@@ -18,6 +20,11 @@ subparsers = ap.add_subparsers(dest='action')
 
 # Args for configuring Google auth
 cp = subparsers.add_parser('configure', help='Configure Google login info.')
+cp.add_argument('--device', dest='device',
+                help='Device code name', default=devicecode)
+
+cp = subparsers.add_parser('search', help='Search app.')
+cp.add_argument('--name', dest='name')
 cp.add_argument('--device', dest='device',
                 help='Device code name', default=devicecode)
 
@@ -34,13 +41,15 @@ dl.add_argument('--ex', dest='expansionfiles',
                 help='Download expansion (OBB) data if available', default='y')
 dl.add_argument('--splits', dest='splits',
                 help='Download split APKs if available', default='y')
+dl.add_argument('--versionCode', dest='versionCode',
+                help='Specify a versioncode to download, if this is omitted, the most recent one is downloaded', default=None)
 
 args = ap.parse_args()
 
 if (args.action == 'download' or args.action == 'configure') and args.device:
     devicecode = args.device
 
-HOMEDIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), '.gplaydl')
+HOMEDIR = os.path.join('/home/dennis/', '.gplaydl')
 CACHEDIR = os.path.join(HOMEDIR, 'cache')
 CACHEFILE = os.path.join(CACHEDIR, '%s.txt' % devicecode)
 CONFIGDIR = os.path.join(HOMEDIR, 'config')
@@ -53,6 +62,32 @@ def sizeof_fmt(num):
             return '%3.1f%s' % (num, unit)
         num /= 1024.0
     return '%.1f%s' % (num, 'Yi')
+
+def search(name):
+    if os.path.exists(CONFIGFILE):
+        with open(CONFIGFILE, 'rb') as f:
+            config = pickle.load(f)
+            email = config.get('email')
+            password = config.get('password')
+    else:
+        print(
+            colored('Login credentials not found. Please configure them first.', 'yellow'))
+        configureauth()
+        sys.exit(0)
+
+    server = GooglePlayAPI(country, 'Europe/Berlin', args.device)
+    try:
+        server = do_login(server, email, password)
+    except Exception as e:
+        print(colored('Login failed. Please re-configure your auth.', 'yellow'))
+        configureauth()
+
+    result = server.search(name)
+    for doc in result:
+        for cluster in doc["child"]:
+            for app in cluster["child"]:
+                print("{}".format(app["docid"]))
+
 
 
 def configureauth():
@@ -73,7 +108,7 @@ def configureauth():
     if not os.path.exists(CONFIGDIR):
         os.makedirs(CONFIGDIR, exist_ok=True)
 
-    server = GooglePlayAPI('en_US', 'America/New York', devicecode)
+    server = GooglePlayAPI(country, 'Europe/Berlin', devicecode)
     try:
         server.login(email, password)
         server.details('com.whatsapp')
@@ -86,7 +121,7 @@ def configureauth():
         configureauth()
 
 
-def downloadapp(packageId):
+def downloadapp(packageId, versionCode):
     if args.storagepath:
         storagepath = args.storagepath
     else:
@@ -102,7 +137,7 @@ def downloadapp(packageId):
         configureauth()
         sys.exit(0)
 
-    server = GooglePlayAPI('en_US', 'America/New York', args.device)
+    server = GooglePlayAPI(country, 'Europe/Berlin', args.device)
     try:
         server = do_login(server, email, password)
     except Exception as e:
@@ -110,10 +145,17 @@ def downloadapp(packageId):
         configureauth()
 
     try:
-        print(colored('Attempting to download %s' % packageId, 'blue'))
+        if versionCode:
+            print(colored('Attempting to download %s.%s' % (packageId, versionCode), 'blue'))
+        else:
+            print(colored('Attempting to download %s' % packageId, 'blue'))
+    
         expansionFiles = True if args.expansionfiles == 'y' else False
-        download = server.download(packageId, expansion_files=expansionFiles)
-        apkfname = '%s.apk' % download.get('docId')
+        download = server.download(packageId, expansion_files=expansionFiles, versionCode=versionCode)
+        if versionCode:
+            apkfname = '%s.%s.apk' % (download.get('docId'), versionCode)
+        else:
+            apkfname = '%s.apk' % download.get('docId')
         apkpath = os.path.join(storagepath, apkfname)
 
         if not os.path.isdir(storagepath):
@@ -220,15 +262,19 @@ def main():
         print(colored('Only Python 3.2.x & up is supported. Please uninstall gplaydl and re-install under Python 3.2.x or up.', 'yellow'))
         sys.exit(1)
 
+    if args.action == 'search':
+        search(args.name)
+        sys.exit(0)
+
     if args.action == 'configure':
         configureauth()
         sys.exit(0)
 
     if args.action == 'download':
         if args.packageId:
-            downloadapp(packageId=args.packageId)
+            downloadapp(packageId=args.packageId, versionCode=args.versionCode)
         sys.exit(0)
 
 
-if args.action not in ['download', 'configure']:
+if args.action not in ['download', 'configure', 'search']:
     ap.print_help()
